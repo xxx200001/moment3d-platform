@@ -1,0 +1,187 @@
+"""API predictor module - wraps CLI prediction logic for API use.
+
+For licensing see accompanying LICENSE file.
+Copyright (c) 2025 Moment3D Contributors.
+"""
+
+from __future__ import annotations
+
+import io
+import logging
+from pathlib import Path
+
+import numpy as np
+import pillow_heif
+import torch
+from PIL import Image
+
+from sharp.cli.predict import predict_image
+from sharp.utils.io import convert_focallength, extract_exif
+from sharp.utils.gaussians import save_ply
+
+LOGGER = logging.getLogger(__name__)
+
+
+def load_image_from_bytes(
+    image_bytes: bytes, auto_rotate: bool = True, remove_alpha: bool = True
+) -> tuple[np.ndarray, float]:
+    """
+    从字节数据加载图片，并提取焦距信�?
+    
+    �?sharp.utils.io.load_rgb 保持完全一致的逻辑
+    
+    Args:
+        image_bytes: 图片字节数据
+        auto_rotate: 是否根据 EXIF 自动旋转
+        remove_alpha: 是否移除 alpha 通道
+    
+    Returns:
+        (image_array, focal_length_px): RGB 图片数组和焦距（像素单位�?
+    """
+    # 检测文件类型并加载图片
+    bytes_io = io.BytesIO(image_bytes)
+    
+    # 尝试检测是否为 HEIC 格式
+    try:
+        # 重置指针
+        bytes_io.seek(0)
+        # 尝试作为 HEIC 打开
+        heif_file = pillow_heif.open_heif(bytes_io, convert_hdr_to_8bit=True)
+        img_pil = heif_file.to_pillow()
+        LOGGER.info("Loaded HEIC image")
+    except Exception:
+        # 不是 HEIC，使�?PIL 打开
+        bytes_io.seek(0)
+        img_pil = Image.open(bytes_io)
+    
+    # 提取 EXIF 信息
+    img_exif = extract_exif(img_pil)
+    
+    # 根据 EXIF 旋转图片
+    if auto_rotate:
+        exif_orientation = img_exif.get("Orientation", 1)
+        if exif_orientation == 3:
+            img_pil = img_pil.transpose(Image.ROTATE_180)
+        elif exif_orientation == 6:
+            img_pil = img_pil.transpose(Image.ROTATE_270)
+        elif exif_orientation == 8:
+            img_pil = img_pil.transpose(Image.ROTATE_90)
+        elif exif_orientation != 1:
+            LOGGER.warning(f"Ignoring image orientation {exif_orientation}.")
+    
+    # 提取焦距信息（与 sharp.utils.io.load_rgb 完全一致）
+    f_35mm = img_exif.get("FocalLengthIn35mmFilm", img_exif.get("FocalLenIn35mmFilm", None))
+    if f_35mm is None or f_35mm < 1:
+        f_35mm = img_exif.get("FocalLength", None)
+        if f_35mm is None:
+            LOGGER.warning("Did not find focal length in EXIF data - Setting to 30mm.")
+            f_35mm = 30.0
+        if f_35mm < 10.0:
+            LOGGER.info("Found focal length below 10mm, assuming it's not for 35mm.")
+            # This is a very crude approximation.
+            f_35mm *= 8.4
+    
+    # 转换�?numpy 数组
+    img = np.asarray(img_pil)
+    
+    # 转换�?RGB（如果是单通道�?
+    if img.ndim < 3 or img.shape[2] == 1:
+        img = np.dstack((img, img, img))
+    
+    # 移除 alpha 通道
+    if remove_alpha:
+        img = img[:, :, :3]
+    
+    # 转换焦距为像素单�?
+    height, width = img.shape[:2]
+    f_px = convert_focallength(width, height, f_35mm)
+    
+    LOGGER.info(f"Loaded image: {width}x{height}, focal_length: {f_35mm}mm @ 35mm film -> {f_px:.2f}px")
+    
+    return img, f_px
+
+
+def predict_from_image_bytes(
+    predictor,
+    image_bytes: bytes,
+    device: torch.device,
+    output_path: Path,
+    task_id: str,
+) -> tuple[Path, dict]:
+    """
+    从图片字节数据预测并保存 PLY 文件
+    
+    �?CLI 的处理流程保持一�?
+    
+    Args:
+        predictor: 预测器模�?
+        image_bytes: 图片字节数据
+        device: 计算设备
+        output_path: 输出目录
+        task_id: 任务 ID（用于文件命名）
+    
+    Returns:
+        (ply_path, metadata): PLY文件路径和元数据字典
+    """
+    from .config import get_config
+    
+    config = get_config()
+    
+    # 加载图片并提取焦距（�?CLI 一致）
+    image, f_px = load_image_from_bytes(image_bytes)
+    height, width = image.shape[:2]
+    
+    LOGGER.info(f"Processing image: {width}x{height}, focal_length: {f_px:.2f}px")
+    
+    # 从配置读取优化选项
+    use_fp16 = config.model.use_fp16 and device.type in ["cuda", "mps"]
+    use_gpu_postprocessing = config.model.use_gpu_postprocessing and device.type in ["cuda", "mps"]
+    
+    if use_fp16:
+        LOGGER.info("Using FP16 precision for inference")
+    if use_gpu_postprocessing:
+        LOGGER.info("Using GPU postprocessing")
+    
+    # 执行预测（使�?CLI �?predict_image 函数�?
+    gaussians = predict_image(
+        predictor,
+        image,
+        f_px,
+        device,
+        use_fp16=use_fp16,
+        use_gpu_postprocessing=use_gpu_postprocessing,
+    )
+    
+    # 保存 PLY 文件
+    output_path.mkdir(exist_ok=True, parents=True)
+    ply_path = output_path / f"{task_id}.ply"
+    
+    save_ply(gaussians, f_px, (height, width), ply_path)
+    
+    LOGGER.info(f"Saved PLY to {ply_path}")
+    
+    # 构建内参矩阵�?x3�?
+    intrinsic_matrix = [
+        f_px, 0.0, width * 0.5,
+        0.0, f_px, height * 0.5,
+        0.0, 0.0, 1.0
+    ]
+    
+    # 构建外参矩阵�?x4单位矩阵�?
+    extrinsic_matrix = [
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+        0.0, 0.0, 0.0, 1.0
+    ]
+    
+    # 构建元数�?
+    metadata = {
+        "intrinsic_matrix": intrinsic_matrix,
+        "extrinsic_matrix": extrinsic_matrix,
+        "image_width": width,
+        "image_height": height,
+        "focal_length_px": float(f_px)
+    }
+    
+    return ply_path, metadata
