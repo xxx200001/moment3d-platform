@@ -1,5 +1,5 @@
 """
-FastAPI routes for the Gaussian Reconstruction Backend.
+FastAPI routes for the Moment3D Reconstruction service.
 """
 import shutil
 import requests
@@ -495,7 +495,7 @@ async def create_task_from_storage(request: DownloadFromStorageRequest):
             video_url,
             stream=True,
             timeout=30,  # 30 seconds timeout for connection
-            headers={"User-Agent": "Gaussian-Studio-Backend/1.0"}
+            headers={"User-Agent": "Moment3D-Reconstruction/1.0"}
         )
         
         if response.status_code != 200:

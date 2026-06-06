@@ -1,13 +1,10 @@
 [project]
-name = "gaussian-studio"
+name = "moment3d-reconstruction"
 version = "0.1.0"
-description = "Tools for frame extraction, sfm and gaussian splatting reconstruction"
+description = "Video-based 3D Gaussian Splatting reconstruction pipeline for Moment3D platform."
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
-authors = [
-    {name = "Yang Mingjia", email = "yangmingjia@bupt.edu.cn"}
-]
 keywords = ["gaussian-splatting", "3d-reconstruction", "sfm", "colmap"]
 classifiers = [
     "Development Status :: 3 - Alpha",
