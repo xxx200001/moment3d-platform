@@ -1,6 +1,6 @@
-# Moment3D Inference API 服务
+# SHARP API 服务
 
-基于 FastAPI 的 单图 3D Gaussian Splatting 预测服务，支持实时状态推送和自动压缩。
+基于 FastAPI 的 SHARP 3D Gaussian Splatting 预测服务，支持实时状态推送和自动压缩。
 
 ## 功能特性
 
